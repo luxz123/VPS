@@ -1,4 +1,4 @@
-name: VPS Ubuntu 22.04 VM + Bot (Persistent + Auto-Restart)
+name: VPS Ubuntu 22.04 VM (Auto-Restart, Persistent)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: Restore Disk State
+    - name: Restore Disk State (if available)
       uses: actions/download-artifact@v4
       with:
         name: ubuntu-disk
@@ -21,21 +21,27 @@ jobs:
     - name: Install QEMU & Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-kvm qemu-utils cloud-image-utils wget curl tmate unzip tar docker.io docker-compose nodejs npm ufw
+        sudo apt-get install -y qemu-kvm qemu-utils cloud-image-utils wget curl tmate unzip tar ufw software-properties-common gnupg lsb-release
 
     - name: Download Ubuntu Cloud Image
       run: |
         IMG=ubuntu-22.04.img
         URL=https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
         if [ ! -f "$IMG" ]; then
+          echo "📥 Downloading Ubuntu 22.04 Cloud Image..."
           wget -c --tries=20 --timeout=30 --show-progress $URL -O $IMG
+          echo "✅ Download selesai!"
+        else
+          echo "✅ File image sudah ada, skip download."
         fi
         qemu-img resize $IMG 32G || true
 
-    - name: Create Cloud-init Config (bot user + auto-restart)
+    - name: Create Cloud-init Config (user luxzz + auto-restart)
       run: |
         cat > user-data <<EOF
         #cloud-config
+        hostname: ubuntu-vm
+        fqdn: ubuntu-vm.local
         users:
           - name: luxzz
             sudo: ALL=(ALL) NOPASSWD:ALL
@@ -49,17 +55,34 @@ jobs:
         package_update: true
         package_upgrade: true
         packages:
-          - curl wget unzip tar sudo gnupg software-properties-common apt-transport-https ca-certificates lsb-release
-          - nodejs npm docker.io docker-compose ufw
+          - curl
+          - wget
+          - unzip
+          - tar
+          - sudo
+          - gnupg
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - lsb-release
+          - docker.io
+          - docker-compose
+          - ufw
+          - nodejs
+          - npm
         runcmd:
           - systemctl enable docker
           - systemctl start docker
           - ufw allow 22
+          - ufw allow 80
+          - ufw allow 443
+          - ufw allow 8080
           - ufw --force enable
           # auto trigger restart ke GitHub setelah 6 jam
           - bash -c "(sleep 21600 && curl -X POST -H 'Accept: application/vnd.github+json' -H 'Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' https://api.github.com/repos/${{ github.repository }}/actions/workflows/vps.yml/dispatches -d '{\"ref\":\"main\"}') &"
         EOF
         echo "instance-id: iid-local01" > meta-data
+        echo "local-hostname: ubuntu-vm" >> meta-data
         cloud-localds seed.img user-data meta-data
 
     - name: Start VM with QEMU
@@ -69,7 +92,7 @@ jobs:
           -smp 2 \
           -drive file=ubuntu-22.04.img,if=virtio \
           -drive file=seed.img,if=virtio \
-          -net nic -net user,hostfwd=tcp::2222-:22 \
+          -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::8080-:8080,hostfwd=tcp::80-:80,hostfwd=tcp::443-:443 \
           -nographic > vm.log 2>&1 &
 
     - name: Wait for Boot
